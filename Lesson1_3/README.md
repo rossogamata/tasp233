@@ -75,7 +75,81 @@ echo "Bucket: $BUCKET_NAME"
 
 ---
 
-## 📦 Крок 1 — S3: статичний контент
+## 🌐 Крок 1 — Створення мережі VPC
+
+У цьому занятті ми не використовуємо default VPC. Створюємо всю мережеву інфраструктуру самостійно, щоб було видно повний шлях від порожнього акаунту до працюючого застосунку.
+
+### 1.1 VPC та Internet Gateway
+
+**VPC (Virtual Private Cloud)** — ізольована мережа AWS. CIDR `10.0.0.0/16` визначає весь діапазон приватних адрес. **Internet Gateway (IGW)** є точкою виходу public subnet до інтернету, але сам по собі маршрут не створює: його потрібно додати до route table.
+
+```bash
+export VPC_ID=$(aws ec2 create-vpc --cidr-block 10.0.0.0/16 \
+  --tag-specifications "ResourceType=vpc,Tags=[{Key=Name,Value=lesson3-vpc-${LAB_ID}}]" \
+  --query 'Vpc.VpcId' --output text)
+aws ec2 modify-vpc-attribute --vpc-id "$VPC_ID" --enable-dns-support '{"Value":true}'
+aws ec2 modify-vpc-attribute --vpc-id "$VPC_ID" --enable-dns-hostnames '{"Value":true}'
+
+export IGW_ID=$(aws ec2 create-internet-gateway \
+  --tag-specifications "ResourceType=internet-gateway,Tags=[{Key=Name,Value=lesson3-igw-${LAB_ID}}]" \
+  --query 'InternetGateway.InternetGatewayId' --output text)
+aws ec2 attach-internet-gateway --vpc-id "$VPC_ID" --internet-gateway-id "$IGW_ID"
+echo "VPC: $VPC_ID; Internet Gateway: $IGW_ID"
+```
+
+**Чому потрібні DNS-атрибути?** `enable-dns-support` дозволяє VPC використовувати DNS AWS, а `enable-dns-hostnames` дає public EC2-інстансам DNS-імена. Без IGW і маршруту `0.0.0.0/0` інстанс не матиме маршруту до публічного інтернету.
+
+### 1.2 Public subnet у двох Availability Zones
+
+**Subnet** — частина адресного простору VPC. Дві subnet у різних AZ дають ALB можливість працювати навіть при проблемі в одній зоні. Ми робимо їх public, тому що route table направляє зовнішній трафік до IGW.
+
+```bash
+export AZS=($(aws ec2 describe-availability-zones --state available \
+  --query 'AvailabilityZones[0:2].ZoneName' --output text))
+export SUBNET_A_ID=$(aws ec2 create-subnet --vpc-id "$VPC_ID" \
+  --cidr-block 10.0.1.0/24 --availability-zone "${AZS[0]}" \
+  --tag-specifications "ResourceType=subnet,Tags=[{Key=Name,Value=lesson3-public-a-${LAB_ID}}]" \
+  --query 'Subnet.SubnetId' --output text)
+export SUBNET_B_ID=$(aws ec2 create-subnet --vpc-id "$VPC_ID" \
+  --cidr-block 10.0.2.0/24 --availability-zone "${AZS[1]}" \
+  --tag-specifications "ResourceType=subnet,Tags=[{Key=Name,Value=lesson3-public-b-${LAB_ID}}]" \
+  --query 'Subnet.SubnetId' --output text)
+export SUBNET_IDS=("$SUBNET_A_ID" "$SUBNET_B_ID")
+
+aws ec2 modify-subnet-attribute --subnet-id "$SUBNET_A_ID" --map-public-ip-on-launch
+aws ec2 modify-subnet-attribute --subnet-id "$SUBNET_B_ID" --map-public-ip-on-launch
+echo "AZ A: ${AZS[0]}, subnet: $SUBNET_A_ID"
+echo "AZ B: ${AZS[1]}, subnet: $SUBNET_B_ID"
+```
+
+`/24` містить 256 адрес, але AWS резервує 5 адрес у кожній subnet. Автоматичне призначення public IP потрібне для нашого навчального EC2-тесту; у production сервери зазвичай розміщують у private subnet.
+
+### 1.3 Route table та Security Group
+
+**Route table** визначає, куди надсилати пакети. Маршрут `0.0.0.0/0` означає "усі адреси, для яких немає точнішого маршруту". **Security Group** працює як stateful firewall на рівні ENI/інстансу: відкриємо лише HTTP-порт 80.
+
+```bash
+export RT_ID=$(aws ec2 create-route-table --vpc-id "$VPC_ID" \
+  --tag-specifications "ResourceType=route-table,Tags=[{Key=Name,Value=lesson3-public-rt-${LAB_ID}}]" \
+  --query 'RouteTable.RouteTableId' --output text)
+aws ec2 create-route --route-table-id "$RT_ID" --destination-cidr-block 0.0.0.0/0 --gateway-id "$IGW_ID"
+aws ec2 associate-route-table --route-table-id "$RT_ID" --subnet-id "$SUBNET_A_ID"
+aws ec2 associate-route-table --route-table-id "$RT_ID" --subnet-id "$SUBNET_B_ID"
+
+export SG_ID=$(aws ec2 create-security-group --group-name "lesson3-sg-${LAB_ID}" \
+  --description "Lesson 3 HTTP access" --vpc-id "$VPC_ID" \
+  --tag-specifications "ResourceType=security-group,Tags=[{Key=Name,Value=lesson3-sg-${LAB_ID}}]" \
+  --query 'GroupId' --output text)
+aws ec2 authorize-security-group-ingress --group-id "$SG_ID" \
+  --protocol tcp --port 80 --cidr 0.0.0.0/0
+echo "Route table: $RT_ID; Security Group: $SG_ID"
+```
+
+На цьому етапі готовий фундамент: VPC містить дві public subnet, обидві subnet асоційовані з route table, а Security Group дозволяє HTTP. Наступні кроки використовують саме ці ID, а не ресурси, створені автоматично AWS.
+
+---
+
+## 📦 Крок 2 — S3: статичний контент
 
 **S3** зберігає об'єкти (HTML, CSS, зображення) і масштабується без керування серверами. Статичний сайт зручно віддавати через CloudFront, а не напряму з публічного S3 endpoint.
 
@@ -103,7 +177,7 @@ aws s3api head-object --bucket "$BUCKET_NAME" --key index.html
 
 ---
 
-## ⚡ Крок 2 — CloudFront: доставка контенту
+## ⚡ Крок 3 — CloudFront: доставка контенту
 
 CloudFront має edge locations у різних регіонах. Користувач отримує кешований об'єкт із найближчої точки, а origin залишається S3.
 
@@ -130,22 +204,20 @@ aws cloudfront get-distribution --id "$DISTRIBUTION_ID" --query 'Distribution.[S
 
 ---
 
-## 🖥️ Крок 3 — EC2: керований віртуальний сервер
+## 🖥️ Крок 4 — EC2: керований віртуальний сервер
 
 EC2 дає контроль над операційною системою, мережевими інтерфейсами, дисками й процесами. На відміну від Lambda, сервер працює доти, доки його не зупинити або не завершити.
 
-### 3.1 Отримання параметрів
+### 4.1 Отримання параметрів
 
 ```bash
-export VPC_ID=$(aws ec2 describe-vpcs --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId' --output text)
-export SUBNET_IDS=($(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" --query 'sort_by(Subnets, &AvailabilityZone)[0:2].SubnetId' --output text))
-export SUBNET_ID="${SUBNET_IDS[1]}"
-export SG_ID=$(aws ec2 create-security-group --group-name "lesson3-sg-${LAB_ID}" --description "Lesson 3 web access" --vpc-id "$VPC_ID" --query 'GroupId' --output text)
-aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --protocol tcp --port 80 --cidr 0.0.0.0/0
+export SUBNET_ID="$SUBNET_A_ID"
+# SSM Parameter Store повертає актуальний Amazon Linux 2023 AMI для регіону AWS_REGION.
+# AMI — шаблон диска, з якого EC2 створює кореневу файлову систему інстансу.
 export AMI_ID=$(aws ssm get-parameter --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 --query 'Parameter.Value' --output text)
 ```
 
-### 3.2 Запуск вебсервера
+### 4.2 Запуск вебсервера
 
 ```bash
 cat > /tmp/user-data.sh <<'EOF'
@@ -160,11 +232,11 @@ export PUBLIC_IP=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --qu
 echo "Відкрийте в браузері: http://${PUBLIC_IP}"
 ```
 
-**Пояснення:** Security Group працює на рівні інстансу й є stateful: відповідь на дозволений вхідний HTTP-запит повертається автоматично. Public IP потрібен лише для цього навчального тесту.
+**Пояснення:** Security Group працює на рівні інстансу й є stateful: відповідь на дозволений вхідний HTTP-запит повертається автоматично. Public IP потрібен лише для цього навчального тесту. `user-data` виконується під час першого запуску і встановлює Apache, тому між переходом у `running` та готовністю HTTP може пройти ще кілька секунд.
 
 ---
 
-## ⚖️ Крок 4 — Балансування навантаження
+## ⚖️ Крок 5 — Балансування навантаження
 
 **Application Load Balancer (ALB)** працює на рівні HTTP/HTTPS і маршрутизує запити до target group. У production сервери запускають щонайменше у двох Availability Zones.
 
@@ -181,7 +253,7 @@ echo "ALB DNS: http://${ALB_DNS}"
 
 ---
 
-## λ Крок 5 — Lambda: serverless-обчислення
+## λ Крок 6 — Lambda: serverless-обчислення
 
 Lambda запускає функцію у відповідь на подію й оплачується за виклики та час виконання. Немає потреби створювати AMI, патчити ОС або підтримувати процес вебсервера.
 
@@ -224,7 +296,7 @@ cat /tmp/lambda-response.json
 
 ---
 
-## 🧹 Крок 6 — Очищення ресурсів
+## 🧹 Крок 7 — Очищення ресурсів
 
 Виконайте очищення, щоб не залишити платні ресурси. CloudFront видаляється лише після вимкнення та переходу в стан `Deployed`.
 
@@ -235,6 +307,12 @@ aws elbv2 delete-target-group --target-group-arn "$TG_ARN"
 aws ec2 terminate-instances --instance-ids "$INSTANCE_ID"
 aws ec2 wait instance-terminated --instance-ids "$INSTANCE_ID"
 aws ec2 delete-security-group --group-id "$SG_ID"
+aws ec2 delete-subnet --subnet-id "$SUBNET_A_ID"
+aws ec2 delete-subnet --subnet-id "$SUBNET_B_ID"
+aws ec2 delete-route-table --route-table-id "$RT_ID"
+aws ec2 detach-internet-gateway --vpc-id "$VPC_ID" --internet-gateway-id "$IGW_ID"
+aws ec2 delete-internet-gateway --internet-gateway-id "$IGW_ID"
+aws ec2 delete-vpc --vpc-id "$VPC_ID"
 aws s3 rm "s3://$BUCKET_NAME" --recursive
 aws s3api delete-bucket --bucket "$BUCKET_NAME"
 
