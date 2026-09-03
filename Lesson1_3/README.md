@@ -1,0 +1,260 @@
+# 🌐 AWS Services: Network · Content Delivery · Compute
+### Заняття 3. Послуги AWS: Мережа та доставка контенту. Обчислення
+
+> **Середовище:** AWS Academy Learner Lab (CloudShell)  
+> **Тривалість:** ~120 хвилин  
+> **Інструмент:** AWS CLI через браузер (CloudShell)  
+> **Регіон:** `us-east-1` (за потреби замініть на регіон свого Learner Lab)
+
+---
+
+## 📋 Цілі заняття
+
+1. Розрізняти призначення VPC, Elastic Load Balancing, Route 53 і CloudFront.
+2. Розгорнути статичний сайт у S3 та підготувати його до доставки через CloudFront.
+3. Запустити EC2-інстанс і перевірити роботу вебсервера.
+4. Створити Application Load Balancer для розподілу HTTP-трафіку.
+5. Виконати функцію AWS Lambda та порівняти EC2, Lambda і контейнерні обчислення.
+6. Видалити створені ресурси після завершення лабораторної роботи.
+
+---
+
+## 🧭 Карта послуг
+
+| Категорія | Послуга | Роль у рішенні |
+|---|---|---|
+| Мережа | **VPC** | Ізольована мережа, підмережі, маршрути й правила доступу |
+| Мережа | **Elastic Load Balancing** | Розподіляє запити між серверами |
+| Мережа | **Route 53** | DNS-імена та маршрутизація запитів |
+| Доставка контенту | **CloudFront** | CDN: кешує контент ближче до користувача |
+| Доставка контенту | **S3** | Зберігає статичні файли сайту |
+| Обчислення | **EC2** | Віртуальний сервер із повним контролем ОС |
+| Обчислення | **Lambda** | Запускає код без адміністрування серверів |
+| Обчислення | **ECS / EKS** | Запускає контейнери: ECS простіший для старту, EKS керує Kubernetes |
+
+### Архітектура практичної частини
+
+```mermaid
+flowchart LR
+    User[Користувач] --> DNS[Route 53 DNS]
+    DNS --> CDN[CloudFront CDN]
+    CDN --> S3[S3: статичний сайт]
+    User --> ALB[Application Load Balancer]
+    ALB --> EC1[EC2 Web 1]
+    ALB --> EC2[EC2 Web 2]
+    Event[Подія або CLI] --> Lambda[AWS Lambda]
+```
+
+> У цій роботі ми створимо S3-бакет, CloudFront-дистрибуцію, EC2-сервер та Lambda-функцію. Route 53 показано як наступний крок: DNS-зона потребує доменного імені.
+
+---
+
+## 🚀 Крок 0 — Запуск AWS CloudShell
+
+1. Увійдіть на [awsacademy.instructure.com](https://awsacademy.instructure.com) → **Learner Lab**.
+2. Натисніть **Start Lab** і дочекайтеся зеленого індикатора.
+3. Відкрийте **AWS Console**, потім натисніть `>_` **CloudShell**.
+4. Перевірте CLI та регіон:
+
+```bash
+aws --version
+aws sts get-caller-identity
+export AWS_REGION=${AWS_REGION:-us-east-1}
+aws configure set region "$AWS_REGION"
+echo "Регіон: $AWS_REGION"
+```
+
+Задайте змінні для лабораторної роботи. Суфікс потрібен, щоб назви ресурсів не конфліктували з роботами інших студентів:
+
+```bash
+export LAB_ID="$(date +%s)"
+export BUCKET_NAME="aws-lesson3-${LAB_ID}"
+export FUNCTION_NAME="lesson3-function-${LAB_ID}"
+echo "Bucket: $BUCKET_NAME"
+```
+
+---
+
+## 📦 Крок 1 — S3: статичний контент
+
+**S3** зберігає об'єкти (HTML, CSS, зображення) і масштабується без керування серверами. Статичний сайт зручно віддавати через CloudFront, а не напряму з публічного S3 endpoint.
+
+```bash
+cat > /tmp/index.html <<'EOF'
+<!doctype html>
+<html lang="uk">
+<head><meta charset="utf-8"><title>AWS Lesson 3</title></head>
+<body><h1>Мережа, доставка контенту та обчислення AWS</h1>
+<p>Статичний файл збережено в Amazon S3.</p></body>
+</html>
+EOF
+
+aws s3api create-bucket --bucket "$BUCKET_NAME" --region "$AWS_REGION" \
+  $( [[ "$AWS_REGION" != "us-east-1" ]] && echo "--create-bucket-configuration LocationConstraint=$AWS_REGION" )
+aws s3 cp /tmp/index.html "s3://$BUCKET_NAME/index.html" --content-type text/html
+aws s3 website "s3://$BUCKET_NAME/" --index-document index.html
+aws s3api put-public-access-block --bucket "$BUCKET_NAME" --public-access-block-configuration \
+  BlockPublicAcls=false,IgnorePublicAcls=false,BlockPublicPolicy=false,RestrictPublicBuckets=false
+aws s3api put-bucket-policy --bucket "$BUCKET_NAME" --policy "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":\"s3:GetObject\",\"Resource\":\"arn:aws:s3:::$BUCKET_NAME/*\"}]}"
+aws s3api head-object --bucket "$BUCKET_NAME" --key index.html
+```
+
+**Питання для обговорення:** чому S3 не є віртуальною машиною, а об'єктне сховище? Яку частину сайту можна кешувати без ризику показати застарілу персональну інформацію?
+
+---
+
+## ⚡ Крок 2 — CloudFront: доставка контенту
+
+CloudFront має edge locations у різних регіонах. Користувач отримує кешований об'єкт із найближчої точки, а origin залишається S3.
+
+Для навчальної демонстрації використовуємо S3 website endpoint як origin. У production краще застосовувати **Origin Access Control (OAC)** і залишати бакет приватним.
+
+```bash
+export S3_WEBSITE_ORIGIN="${BUCKET_NAME}.s3-website-${AWS_REGION}.amazonaws.com"
+cat > /tmp/cloudfront-config.json <<EOF
+{
+  "CallerReference": "lesson3-${LAB_ID}",
+  "Comment": "Lesson 3 CloudFront distribution",
+  "Enabled": true,
+  "DefaultRootObject": "index.html",
+  "Origins": {"Quantity": 1, "Items": [{"Id": "s3-website-origin", "DomainName": "${S3_WEBSITE_ORIGIN}", "CustomOriginConfig": {"HTTPPort": 80, "HTTPSPort": 443, "OriginProtocolPolicy": "http-only"}]},
+  "DefaultCacheBehavior": {"TargetOriginId": "s3-website-origin", "ViewerProtocolPolicy": "redirect-to-https", "AllowedMethods": {"Quantity": 2, "Items": ["GET", "HEAD"], "CachedMethods": {"Quantity": 2, "Items": ["GET", "HEAD"]}}, "ForwardedValues": {"QueryString": false, "Cookies": {"Forward": "none"}}, "MinTTL": 0},
+  "PriceClass": "PriceClass_100"
+}
+EOF
+export DISTRIBUTION_ID=$(aws cloudfront create-distribution --distribution-config file:///tmp/cloudfront-config.json --query 'Distribution.Id' --output text)
+aws cloudfront get-distribution --id "$DISTRIBUTION_ID" --query 'Distribution.[Status,DomainName]' --output table
+```
+
+> Дистрибуція може переходити у стан `Deployed` кілька хвилин. У CloudFront тарифи залежать від обсягу переданих даних і запитів, тому після заняття обов'язково видаліть її.
+
+---
+
+## 🖥️ Крок 3 — EC2: керований віртуальний сервер
+
+EC2 дає контроль над операційною системою, мережевими інтерфейсами, дисками й процесами. На відміну від Lambda, сервер працює доти, доки його не зупинити або не завершити.
+
+### 3.1 Отримання параметрів
+
+```bash
+export VPC_ID=$(aws ec2 describe-vpcs --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId' --output text)
+export SUBNET_IDS=($(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VPC_ID" --query 'sort_by(Subnets, &AvailabilityZone)[0:2].SubnetId' --output text))
+export SUBNET_ID="${SUBNET_IDS[1]}"
+export SG_ID=$(aws ec2 create-security-group --group-name "lesson3-sg-${LAB_ID}" --description "Lesson 3 web access" --vpc-id "$VPC_ID" --query 'GroupId' --output text)
+aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --protocol tcp --port 80 --cidr 0.0.0.0/0
+export AMI_ID=$(aws ssm get-parameter --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 --query 'Parameter.Value' --output text)
+```
+
+### 3.2 Запуск вебсервера
+
+```bash
+cat > /tmp/user-data.sh <<'EOF'
+#!/bin/bash
+yum install -y httpd
+systemctl enable --now httpd
+echo "<h1>Hello from EC2 - Lesson 3</h1>" > /var/www/html/index.html
+EOF
+export INSTANCE_ID=$(aws ec2 run-instances --image-id "$AMI_ID" --instance-type t2.micro --subnet-id "$SUBNET_ID" --security-group-ids "$SG_ID" --associate-public-ip-address --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=lesson3-web-${LAB_ID}}]" --user-data file:///tmp/user-data.sh --query 'Instances[0].InstanceId' --output text)
+aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
+export PUBLIC_IP=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
+echo "Відкрийте в браузері: http://${PUBLIC_IP}"
+```
+
+**Пояснення:** Security Group працює на рівні інстансу й є stateful: відповідь на дозволений вхідний HTTP-запит повертається автоматично. Public IP потрібен лише для цього навчального тесту.
+
+---
+
+## ⚖️ Крок 4 — Балансування навантаження
+
+**Application Load Balancer (ALB)** працює на рівні HTTP/HTTPS і маршрутизує запити до target group. У production сервери запускають щонайменше у двох Availability Zones.
+
+```bash
+export TG_ARN=$(aws elbv2 create-target-group --name "lesson3-tg-${LAB_ID}" --protocol HTTP --port 80 --vpc-id "$VPC_ID" --target-type instance --health-check-path / --query 'TargetGroups[0].TargetGroupArn' --output text)
+aws elbv2 register-targets --target-group-arn "$TG_ARN" --targets Id="$INSTANCE_ID"
+export ALB_ARN=$(aws elbv2 create-load-balancer --name "lesson3-alb-${LAB_ID}" --subnets "${SUBNET_IDS[@]}" --security-groups "$SG_ID" --query 'LoadBalancers[0].LoadBalancerArn' --output text)
+export ALB_DNS=$(aws elbv2 describe-load-balancers --load-balancer-arns "$ALB_ARN" --query 'LoadBalancers[0].DNSName' --output text)
+aws elbv2 create-listener --load-balancer-arn "$ALB_ARN" --protocol HTTP --port 80 --default-actions Type=forward,TargetGroupArn="$TG_ARN"
+echo "ALB DNS: http://${ALB_DNS}"
+```
+
+> ALB потребує підмережі щонайменше у двох Availability Zones. Якщо команда повертає помилку про кількість підмереж, отримайте дві підмережі в різних AZ через `describe-subnets` і повторіть створення ALB з обома ID.
+
+---
+
+## λ Крок 5 — Lambda: serverless-обчислення
+
+Lambda запускає функцію у відповідь на подію й оплачується за виклики та час виконання. Немає потреби створювати AMI, патчити ОС або підтримувати процес вебсервера.
+
+```bash
+cat > /tmp/lambda-handler.py <<'EOF'
+import json
+
+def lambda_handler(event, context):
+    return {
+        "statusCode": 200,
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps({"lesson": 3, "service": "AWS Lambda"})
+    }
+EOF
+cd /tmp && zip -q lesson3-function.zip lambda-handler.py
+export LAMBDA_ROLE_ARN=$(aws iam get-role --role-name LabRole --query 'Role.Arn' --output text)
+export FUNCTION_ARN=$(aws lambda create-function --function-name "$FUNCTION_NAME" --runtime python3.12 --handler lambda-handler.lambda_handler --role "$LAMBDA_ROLE_ARN" --zip-file fileb:///tmp/lesson3-function.zip --query 'FunctionArn' --output text)
+aws lambda invoke --function-name "$FUNCTION_NAME" /tmp/lambda-response.json
+cat /tmp/lambda-response.json
+```
+
+### Коли яку модель обрати?
+
+| Потреба | Рекомендований сервіс | Причина |
+|---|---|---|
+| Постійний процес і повний контроль ОС | EC2 | Гнучкість, але адміністрування на вас |
+| Короткий код, що запускається подіями | Lambda | Serverless і автоматичне масштабування |
+| Docker-контейнери без Kubernetes | ECS | Керування контейнерними застосунками |
+| Kubernetes-сумісна платформа | EKS | Більше контролю, але вища складність |
+
+---
+
+## 🧪 Підсумкові завдання
+
+1. Змініть `index.html`, завантажте його до S3 і поясніть, коли CloudFront покаже стару версію з кешу.
+2. Додайте другий EC2-інстанс у target group та перевірте його health status.
+3. Назвіть щонайменше два ризики відкритої для `0.0.0.0/0` групи безпеки.
+4. Порівняйте шлях запиту до S3 через CloudFront із шляхом до EC2 через ALB.
+5. Поясніть, де в цій архітектурі доречно використати Route 53.
+
+---
+
+## 🧹 Крок 6 — Очищення ресурсів
+
+Виконайте очищення, щоб не залишити платні ресурси. CloudFront видаляється лише після вимкнення та переходу в стан `Deployed`.
+
+```bash
+aws lambda delete-function --function-name "$FUNCTION_NAME"
+aws elbv2 delete-load-balancer --load-balancer-arn "$ALB_ARN"
+aws elbv2 delete-target-group --target-group-arn "$TG_ARN"
+aws ec2 terminate-instances --instance-ids "$INSTANCE_ID"
+aws ec2 wait instance-terminated --instance-ids "$INSTANCE_ID"
+aws ec2 delete-security-group --group-id "$SG_ID"
+aws s3 rm "s3://$BUCKET_NAME" --recursive
+aws s3api delete-bucket --bucket "$BUCKET_NAME"
+
+# CloudFront: вимкніть дистрибуцію, дочекайтеся Deployed, потім видаліть її.
+aws cloudfront get-distribution-config --id "$DISTRIBUTION_ID" > /tmp/cf-current.json
+python3 - <<'PY'
+import json
+data = json.load(open("/tmp/cf-current.json"))
+data["DistributionConfig"]["Enabled"] = False
+json.dump(data["DistributionConfig"], open("/tmp/cf-disabled.json", "w"))
+open("/tmp/cf-etag", "w").write(data["ETag"])
+PY
+aws cloudfront update-distribution --id "$DISTRIBUTION_ID" --if-match "$(cat /tmp/cf-etag)" --distribution-config file:///tmp/cf-disabled.json
+echo "Коли CloudFront стане Deployed: aws cloudfront delete-distribution --id $DISTRIBUTION_ID"
+```
+
+> Для реального проєкту додатково перевірте NAT Gateway, Elastic IP, CloudWatch та інші ресурси, створені під час роботи. Вони можуть генерувати витрати навіть після видалення EC2.
+
+---
+
+## ✅ Очікуваний результат
+
+Після заняття студент може пояснити різницю між маршрутизацією мережевого трафіку, кешуванням контенту та виконанням коду, а також самостійно обрати між EC2, Lambda і контейнерним сервісом для заданого сценарію.
