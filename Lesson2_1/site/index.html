@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="uk">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Навчальна сторінка для першого Docker-контейнера">
+  <title>Docker Kitty Lab</title>
+  <style>
+    :root {
+      --ink: #432438;
+      --muted: #7f5c70;
+      --pink: #f783ad;
+      --hot-pink: #ef4f89;
+      --rose: #ffdce9;
+      --cream: #fff9f2;
+      --yellow: #ffd764;
+      --shadow: 0 18px 45px rgba(112, 44, 77, .15);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      font-family: "Trebuchet MS", "Avenir Next", sans-serif;
+      background:
+        radial-gradient(circle at 12% 12%, rgba(255, 255, 255, .8) 0 4px, transparent 5px),
+        radial-gradient(circle at 88% 30%, rgba(255, 255, 255, .7) 0 7px, transparent 8px),
+        linear-gradient(135deg, #fff0f5 0%, #ffe0eb 46%, #ffc6dc 100%);
+      background-size: 110px 110px, 170px 170px, auto;
+      overflow-x: hidden;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 24px 28px 8px;
+      animation: slide-down .7s ease both;
+    }
+
+    .brand {
+      font-weight: 900;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .brand span {
+      color: var(--hot-pink);
+    }
+
+    .status {
+      color: var(--muted);
+      font-size: .85rem;
+    }
+
+    .status::before {
+      content: "";
+      display: inline-block;
+      width: 9px;
+      height: 9px;
+      margin-right: 7px;
+      border-radius: 50%;
+      background: #42c98a;
+      box-shadow: 0 0 0 5px rgba(66, 201, 138, .16);
+    }
+
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 48px 28px 64px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.05fr .95fr;
+      align-items: center;
+      gap: clamp(36px, 7vw, 100px);
+    }
+
+    .eyebrow {
+      color: var(--hot-pink);
+      font-weight: 900;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      font-size: .78rem;
+    }
+
+    h1 {
+      max-width: 650px;
+      margin: 14px 0 18px;
+      font-size: clamp(2.7rem, 7vw, 5.8rem);
+      line-height: .92;
+      letter-spacing: -.04em;
+    }
+
+    h1 em {
+      color: var(--hot-pink);
+      font-style: normal;
+    }
+
+    .lead {
+      max-width: 520px;
+      color: var(--muted);
+      font-size: 1.1rem;
+      line-height: 1.65;
+    }
+
+    .kitty-stage {
+      position: relative;
+      min-height: 390px;
+      display: grid;
+      place-items: center;
+      animation: float 5s ease-in-out infinite;
+    }
+
+    .sparkle {
+      position: absolute;
+      color: var(--hot-pink);
+      font-size: 2rem;
+      animation: twinkle 2.4s ease-in-out infinite;
+    }
+
+    .sparkle.one {
+      top: 5%;
+      left: 14%;
+    }
+
+    .sparkle.two {
+      right: 8%;
+      top: 30%;
+      animation-delay: .8s;
+    }
+
+    .sparkle.three {
+      bottom: 10%;
+      left: 10%;
+      animation-delay: 1.4s;
+    }
+
+    .cat {
+      position: relative;
+      width: 245px;
+      height: 210px;
+      border: 7px solid var(--ink);
+      border-radius: 48% 48% 45% 45%;
+      background: var(--cream);
+      box-shadow: var(--shadow);
+    }
+
+    .cat::before,
+    .cat::after {
+      content: "";
+      position: absolute;
+      top: -43px;
+      width: 83px;
+      height: 78px;
+      border: 7px solid var(--ink);
+      background: var(--cream);
+      z-index: -1;
+    }
+
+    .cat::before {
+      left: 5px;
+      transform: rotate(-24deg) skewY(12deg);
+      border-radius: 20% 90% 0 20%;
+    }
+
+    .cat::after {
+      right: 5px;
+      transform: rotate(24deg) skewY(-12deg);
+      border-radius: 90% 20% 20% 0;
+    }
+
+    .ear-shadow {
+      position: absolute;
+      inset: 9px auto auto 18px;
+      width: 45px;
+      height: 22px;
+      border-radius: 50%;
+      background: var(--rose);
+      transform: rotate(-28deg);
+    }
+
+    .face {
+      position: absolute;
+      inset: 77px 0 auto;
+      height: 50px;
+    }
+
+    .eye {
+      position: absolute;
+      top: 0;
+      width: 12px;
+      height: 22px;
+      border-radius: 50%;
+      background: var(--ink);
+    }
+
+    .eye.left {
+      left: 62px;
+    }
+
+    .eye.right {
+      right: 62px;
+    }
+
+    .nose {
+      position: absolute;
+      left: calc(50% - 7px);
+      top: 20px;
+      width: 14px;
+      height: 11px;
+      border-radius: 50%;
+      background: var(--yellow);
+      border: 3px solid var(--ink);
+    }
+
+    .whiskers {
+      position: absolute;
+      top: 30px;
+      width: 58px;
+      height: 20px;
+      border-top: 3px solid var(--ink);
+    }
+
+    .whiskers.left {
+      left: -5px;
+      transform: rotate(10deg);
+    }
+
+    .whiskers.right {
+      right: -5px;
+      transform: rotate(-10deg);
+    }
+
+    .bow {
+      position: absolute;
+      right: 10px;
+      top: -36px;
+      width: 70px;
+      height: 54px;
+      z-index: 2;
+    }
+
+    .bow::before,
+    .bow::after {
+      content: "";
+      position: absolute;
+      width: 39px;
+      height: 43px;
+      background: var(--hot-pink);
+      border: 5px solid var(--ink);
+    }
+
+    .bow::before {
+      left: 0;
+      border-radius: 75% 25% 60% 35%;
+      transform: rotate(20deg);
+    }
+
+    .bow::after {
+      right: 0;
+      border-radius: 25% 75% 35% 60%;
+      transform: rotate(-20deg);
+    }
+
+    .bow span {
+      position: absolute;
+      left: 27px;
+      top: 16px;
+      width: 18px;
+      height: 18px;
+      border: 4px solid var(--ink);
+      border-radius: 50%;
+      background: var(--yellow);
+      z-index: 1;
+    }
+
+    .panel {
+      margin-top: 50px;
+      display: grid;
+      grid-template-columns: 1fr .9fr;
+      gap: 26px;
+    }
+
+    .card {
+      background: rgba(255, 249, 242, .86);
+      border: 2px solid rgba(67, 36, 56, .12);
+      border-radius: 24px;
+      padding: 28px;
+      box-shadow: var(--shadow);
+      animation: rise .8s .2s ease both;
+    }
+
+    .card h2 {
+      margin: 0 0 8px;
+      font-size: 1.35rem;
+    }
+
+    .card p {
+      margin: 0 0 20px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-size: .85rem;
+      font-weight: 800;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 10px;
+    }
+
+    input {
+      min-width: 0;
+      flex: 1;
+      border: 2px solid #f3b7cb;
+      border-radius: 12px;
+      padding: 14px 15px;
+      color: var(--ink);
+      background: white;
+      font: inherit;
+      outline: none;
+    }
+
+    input:focus {
+      border-color: var(--hot-pink);
+      box-shadow: 0 0 0 4px rgba(239, 79, 137, .14);
+    }
+
+    button {
+      border: 0;
+      border-radius: 12px;
+      padding: 0 20px;
+      color: white;
+      background: var(--hot-pink);
+      font: inherit;
+      font-weight: 900;
+      cursor: pointer;
+      transition: transform .2s, background .2s;
+    }
+
+    button:hover {
+      background: #d93b76;
+      transform: translateY(-2px);
+    }
+
+    .result {
+      display: grid;
+      align-content: center;
+      min-height: 150px;
+      border-radius: 16px;
+      padding: 24px;
+      background: var(--rose);
+    }
+
+    .result small {
+      color: var(--muted);
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .1em;
+    }
+
+    .result strong {
+      margin-top: 6px;
+      font-size: 1.55rem;
+    }
+
+    .facts {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .fact {
+      padding: 13px;
+      border-radius: 12px;
+      background: #fff;
+      font-size: .82rem;
+      line-height: 1.35;
+    }
+
+    .fact b {
+      display: block;
+      color: var(--hot-pink);
+      font-size: 1.15rem;
+    }
+
+    footer {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 0 28px 26px;
+      color: var(--muted);
+      font-size: .85rem;
+    }
+
+    @keyframes float {
+
+      0%,
+      100% {
+        transform: translateY(0) rotate(-2deg);
+      }
+
+      50% {
+        transform: translateY(-13px) rotate(2deg);
+      }
+    }
+
+    @keyframes twinkle {
+
+      0%,
+      100% {
+        opacity: .35;
+        transform: scale(.8) rotate(0);
+      }
+
+      50% {
+        opacity: 1;
+        transform: scale(1.15) rotate(16deg);
+      }
+    }
+
+    @keyframes slide-down {
+      from {
+        opacity: 0;
+        transform: translateY(-18px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes rise {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @media (max-width: 760px) {
+      .topbar {
+        padding-inline: 20px;
+      }
+
+      main {
+        padding: 30px 20px 45px;
+      }
+
+      .hero,
+      .panel {
+        grid-template-columns: 1fr;
+      }
+
+      .kitty-stage {
+        min-height: 310px;
+        order: -1;
+      }
+
+      h1 {
+        font-size: clamp(2.8rem, 15vw, 5rem);
+      }
+
+      .card {
+        padding: 22px;
+      }
+
+      .input-row {
+        flex-direction: column;
+      }
+
+      button {
+        min-height: 48px;
+      }
+
+      footer {
+        padding-inline: 20px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <header class="topbar">
+    <div class="brand">Docker <span>Kitty</span> Lab</div>
+    <div class="status">контейнер працює</div>
+  </header>
+  <main>
+    <section class="hero" aria-labelledby="main-title">
+      <div>
+        <div class="eyebrow">Практичне заняття 2/3</div>
+        <h1>Привіт, <em id="hero-name">курсант</em>!</h1>
+        <p class="lead">Це маленький вебзастосунок, який живе всередині Docker-контейнера. Змініть прізвище, оновіть
+          сторінку та запакуйте власну версію.</p>
+      </div>
+      <div class="kitty-stage" aria-label="Анімований рожевий котик" role="img">
+        <span class="sparkle one">✦</span><span class="sparkle two">✧</span><span class="sparkle three">✦</span>
+        <div class="cat"><span class="ear-shadow"></span>
+          <div class="bow"><span></span></div>
+          <div class="face"><i class="eye left"></i><i class="eye right"></i><i class="nose"></i><i
+              class="whiskers left"></i><i class="whiskers right"></i></div>
+        </div>
+      </div>
+    </section>
+    <section class="panel" aria-label="Кастомізація застосунку">
+      <article class="card">
+        <h2>Персоналізуйте сторінку</h2>
+        <p>Це поле працює у браузері. Для власного образу змініть значення <code>defaultSurname</code> у коді нижче.</p>
+        <label for="surname">Ваше прізвище</label>
+        <div class="input-row"><input id="surname" type="text" value="Курсант" maxlength="40" autocomplete="off"><button
+            id="save" type="button">Застосувати</button></div>
+      </article>
+      <article class="card">
+        <div class="result"><small>Ваш контейнер вітає</small><strong id="greeting">Курсант, усе працює!</strong></div>
+        <div class="facts">
+          <div class="fact"><b>80</b>порт NGINX</div>
+          <div class="fact"><b>1</b>HTML-файл</div>
+          <div class="fact"><b>0</b>зовнішніх API</div>
+        </div>
+      </article>
+    </section>
+  </main>
+  <footer>Зібрано у власний Docker image · <span id="year"></span></footer>
+  <script>
+    const defaultSurname = "Курсант";
+    const surnameInput = document.querySelector("#surname");
+    const greeting = document.querySelector("#greeting");
+    const heroName = document.querySelector("#hero-name");
+
+    function applySurname() {
+      const surname = surnameInput.value.trim() || defaultSurname;
+      surnameInput.value = surname;
+      heroName.textContent = surname;
+      greeting.textContent = `${surname}, усе працює!`;
+    }
+
+    document.querySelector("#save").addEventListener("click", applySurname);
+    surnameInput.addEventListener("keydown", (event) => { if (event.key === "Enter") applySurname(); });
+    document.querySelector("#year").textContent = new Date().getFullYear();
+    applySurname();
+  </script>
+</body>
+
+</html>
