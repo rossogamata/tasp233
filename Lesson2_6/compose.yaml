@@ -1,0 +1,28 @@
+services:
+  web:
+    build: ./web
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - lesson-network
+
+  api:
+    build: ./api
+    expose:
+      - "8000"
+    environment:
+      APP_MESSAGE: "Вітаємо у Docker Compose!"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - lesson-network
+
+networks:
+  lesson-network:
+    driver: bridge
